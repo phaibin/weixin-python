@@ -8,6 +8,7 @@ import string
 import random
 import hashlib
 import requests
+import hmac
 
 from .base import Map, WeixinError
 
@@ -55,12 +56,16 @@ class WeixinPay(object):
         char = string.ascii_letters + string.digits
         return "".join(random.choice(char) for _ in range(32))
 
-    def sign(self, raw):
+    def sign(self, raw, sign_type='MD5'):
         raw = [(k, str(raw[k]) if isinstance(raw[k], int) else raw[k])
                for k in sorted(raw.keys())]
         s = "&".join("=".join(kv) for kv in raw if kv[1])
         s += "&key={0}".format(self.mch_key)
-        return hashlib.md5(s.encode("utf-8")).hexdigest().upper()
+        if sign_type == 'HMAC-SHA256':
+            return hmac.new(self.mch_key.encode("utf-8"), s.encode("utf-8"),
+                            digestmod=hashlib.sha256).hexdigest().upper()
+        else:
+            return hashlib.md5(s.encode("utf-8")).hexdigest().upper()
 
     def check(self, data):
         sign = data.pop("sign")
@@ -81,12 +86,12 @@ class WeixinPay(object):
             raw[child.tag] = child.text
         return raw
 
-    def _fetch(self, url, data, use_cert=False, appid=True):
+    def _fetch(self, url, data, use_cert=False, appid=True, sign_type='MD5'):
         if appid:
             data.setdefault("appid", self.app_id)
         data.setdefault("mch_id", self.mch_id)
         data.setdefault("nonce_str", self.nonce_str)
-        data.setdefault("sign", self.sign(data))
+        data.setdefault("sign", self.sign(data, sign_type))
 
         if use_cert:
             resp = self.sess.post(url, data=self.to_xml(data), cert=(self.cert, self.key))
@@ -191,11 +196,11 @@ class WeixinPay(object):
         if "out_trade_no" not in data and "transaction_id" not in data:
             raise WeixinPayError("退款申请接口中，out_trade_no、transaction_id至少填一个")
         if "out_refund_no" not in data:
-            raise WeixinPayError("退款申请接口中，缺少必填参数out_refund_no");
+            raise WeixinPayError("退款申请接口中，缺少必填参数out_refund_no")
         if "total_fee" not in data:
-            raise WeixinPayError("退款申请接口中，缺少必填参数total_fee");
+            raise WeixinPayError("退款申请接口中，缺少必填参数total_fee")
         if "refund_fee" not in data:
-            raise WeixinPayError("退款申请接口中，缺少必填参数refund_fee");
+            raise WeixinPayError("退款申请接口中，缺少必填参数refund_fee")
 
         return self._fetch(url, data, True)
 
@@ -211,7 +216,8 @@ class WeixinPay(object):
         url = self.PAY_HOST + "/pay/refundquery"
         if "out_refund_no" not in data and "out_trade_no" not in data \
                 and "transaction_id" not in data and "refund_id" not in data:
-            raise WeixinPayError("退款查询接口中，out_refund_no、out_trade_no、transaction_id、refund_id四个参数必填一个")
+            raise WeixinPayError(
+                "退款查询接口中，out_refund_no、out_trade_no、transaction_id、refund_id四个参数必填一个")
 
         return self._fetch(url, data)
 
@@ -229,6 +235,21 @@ class WeixinPay(object):
             raise WeixinPayError("对账单接口中，缺少必填参数bill_date")
 
         return self._fetch(url, data)
+
+    def download_fund_flow(self, bill_date, account_type="Basic", **data):
+        """
+        下载资金账单
+        bill_date、account_type为必填参数
+        appid、mchid、nonce_str不需要填入
+        """
+        url = self.PAY_HOST + "/pay/downloadfundflow"
+        data.setdefault("bill_date", bill_date)
+        data.setdefault("account_type", account_type)
+
+        if "bill_date" not in data:
+            raise WeixinPayError("资金账单接口中，缺少必填参数bill_date")
+
+        return self._fetch(url, data, use_cert=True, sign_type='HMAC-SHA256')
 
     def pay_individual(self, **data):
         """
